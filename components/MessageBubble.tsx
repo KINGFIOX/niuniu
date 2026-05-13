@@ -21,7 +21,7 @@ export function MessageBubble({ message, isStreaming }: Props) {
         <div className="shrink-0 w-12 h-12 rounded-full bg-white shadow-bubble overflow-hidden border-2 border-niuniu-pink">
           <Image
             src="/niuniu-avatar.png"
-            alt="妞妞"
+            alt="妞妞导游"
             width={96}
             height={96}
             className="w-full h-full object-cover"

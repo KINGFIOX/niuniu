@@ -1,4 +1,8 @@
-import { SYSTEM_PROMPT } from "@/lib/systemPrompt";
+import {
+  DEFAULT_MODULE_ID,
+  MODULE_INDEX,
+  type ModuleId,
+} from "@/lib/systemPrompt";
 
 export const runtime = "edge";
 
@@ -6,12 +10,19 @@ const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/chat/completions";
 
 // Switch between "deepseek-reasoner" (R1, slower/pricier) and
 // "deepseek-chat" (V3, fast/cheaper) by env var, default = R1 per spec.
-const MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const MODEL = process.env.DEEPSEEK_MODEL || "deepseek-reasoner";
 
 type ChatMessage = {
   role: "user" | "assistant" | "system";
   content: string;
 };
+
+function resolveModule(moduleId: unknown) {
+  if (typeof moduleId === "string" && moduleId in MODULE_INDEX) {
+    return MODULE_INDEX[moduleId as ModuleId];
+  }
+  return MODULE_INDEX[DEFAULT_MODULE_ID];
+}
 
 export async function POST(req: Request) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -22,7 +33,7 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: { messages?: ChatMessage[] };
+  let body: { messages?: ChatMessage[]; moduleId?: string };
   try {
     body = await req.json();
   } catch {
@@ -35,7 +46,10 @@ export async function POST(req: Request) {
   const incoming = Array.isArray(body.messages) ? body.messages : [];
   // Strip any client-supplied system role to prevent prompt injection.
   const safeMessages = incoming.filter(
-    (m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string",
+    (m) =>
+      m &&
+      (m.role === "user" || m.role === "assistant") &&
+      typeof m.content === "string",
   );
 
   if (safeMessages.length === 0) {
@@ -44,6 +58,8 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json" },
     });
   }
+
+  const mod = resolveModule(body.moduleId);
 
   const upstream = await fetch(DEEPSEEK_ENDPOINT, {
     method: "POST",
@@ -55,7 +71,7 @@ export async function POST(req: Request) {
       model: MODEL,
       stream: true,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: mod.systemPrompt },
         ...safeMessages,
       ],
     }),
@@ -81,6 +97,7 @@ export async function POST(req: Request) {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Module-Id": mod.id,
     },
   });
 }

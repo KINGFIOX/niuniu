@@ -1,44 +1,71 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatInput } from "@/components/ChatInput";
 import { ChatWindow } from "@/components/ChatWindow";
+import { ModuleSwitcher } from "@/components/ModuleSwitcher";
 import type { ChatMessage } from "@/components/MessageBubble";
-import { WELCOME_MESSAGE } from "@/lib/systemPrompt";
+import {
+  DEFAULT_MODULE_ID,
+  MODULE_INDEX,
+  MODULES,
+  WELCOME_MESSAGE,
+  type ModuleId,
+} from "@/lib/systemPrompt";
 
-const STORAGE_KEY = "niuniu-zoo-chat-history-v1";
+const HISTORY_KEY = "niuniu-zoo-chat-history-v1";
+const MODULE_KEY = "niuniu-zoo-chat-current-module-v1";
 
 const initialMessages: ChatMessage[] = [
   { role: "assistant", content: WELCOME_MESSAGE },
 ];
 
+function isModuleId(v: unknown): v is ModuleId {
+  return typeof v === "string" && v in MODULE_INDEX;
+}
+
 export default function Page() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [moduleId, setModuleId] = useState<ModuleId>(DEFAULT_MODULE_ID);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as ChatMessage[];
+      const rawHistory = localStorage.getItem(HISTORY_KEY);
+      if (rawHistory) {
+        const parsed = JSON.parse(rawHistory) as ChatMessage[];
         if (Array.isArray(parsed) && parsed.length > 0) {
           setMessages(parsed);
         }
       }
     } catch {
-      // ignore corrupted history
+      // ignore
+    }
+    try {
+      const rawMod = localStorage.getItem(MODULE_KEY);
+      if (isModuleId(rawMod)) setModuleId(rawMod);
+    } catch {
+      // ignore
     }
   }, []);
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(messages));
     } catch {
       // quota or private mode; ignore
     }
   }, [messages]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MODULE_KEY, moduleId);
+    } catch {
+      // ignore
+    }
+  }, [moduleId]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -50,7 +77,7 @@ export default function Page() {
     setStreaming(null);
     setError(null);
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(HISTORY_KEY);
     } catch {
       // ignore
     }
@@ -60,10 +87,6 @@ export default function Page() {
     async (text: string) => {
       setError(null);
       const userMsg: ChatMessage = { role: "user", content: text };
-      // Only send real conversation turns to the backend; the local welcome
-      // message is a UI-only greeting and doesn't need to count against tokens,
-      // but we keep it in history so the model can see context after the
-      // first user reply.
       const nextHistory = [...messages, userMsg];
       setMessages(nextHistory);
       setStreaming("");
@@ -75,7 +98,7 @@ export default function Page() {
         const resp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: nextHistory }),
+          body: JSON.stringify({ messages: nextHistory, moduleId }),
           signal: controller.signal,
         });
 
@@ -106,7 +129,8 @@ export default function Page() {
             if (data === "[DONE]") continue;
             try {
               const json = JSON.parse(data);
-              const delta: string | undefined = json?.choices?.[0]?.delta?.content;
+              const delta: string | undefined =
+                json?.choices?.[0]?.delta?.content;
               if (typeof delta === "string" && delta.length > 0) {
                 assistantText += delta;
                 setStreaming(assistantText);
@@ -137,10 +161,16 @@ export default function Page() {
         abortRef.current = null;
       }
     },
-    [messages],
+    [messages, moduleId],
   );
 
   const isStreaming = streaming !== null;
+
+  const currentModule = useMemo(
+    () => MODULE_INDEX[moduleId] ?? MODULES[0],
+    [moduleId],
+  );
+  const subtitle = `动物园游记 · ${currentModule.short}`;
 
   return (
     <main className="min-h-dvh flex flex-col px-3 sm:px-6 py-3 sm:py-5 gap-3 max-w-3xl mx-auto">
@@ -148,6 +178,14 @@ export default function Page() {
         messages={messages}
         streamingAssistant={streaming}
         onClear={handleClear}
+        subtitle={subtitle}
+        moduleSwitcher={
+          <ModuleSwitcher
+            value={moduleId}
+            onChange={setModuleId}
+            disabled={isStreaming}
+          />
+        }
       />
       {error ? (
         <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-2xl px-4 py-2">
@@ -160,6 +198,9 @@ export default function Page() {
         onSend={handleSend}
         onStop={handleStop}
       />
+      <p className="text-center text-xs text-gray-400">
+        模型：DeepSeek · 由 DeepSeek-R1 驱动 · 本站对话仅用于教学演示
+      </p>
     </main>
   );
 }

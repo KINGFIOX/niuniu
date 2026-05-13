@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "妞妞导游 · 动物园游记",
-  description: "和小蜗牛妞妞一起在动物园里练习说话！",
+  description: "和小蜗牛妞妞导游一起逛动物园，练习说话！",
 };
 
 export const viewport: Viewport = {

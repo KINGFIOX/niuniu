@@ -1,16 +1,24 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useRef } from "react";
+import { ReactNode, useEffect, useRef } from "react";
 import { MessageBubble, type ChatMessage } from "./MessageBubble";
 
 type Props = {
   messages: ChatMessage[];
   streamingAssistant?: string | null;
   onClear?: () => void;
+  subtitle?: string;
+  moduleSwitcher?: ReactNode;
 };
 
-export function ChatWindow({ messages, streamingAssistant, onClear }: Props) {
+export function ChatWindow({
+  messages,
+  streamingAssistant,
+  onClear,
+  subtitle,
+  moduleSwitcher,
+}: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -26,28 +34,32 @@ export function ChatWindow({ messages, streamingAssistant, onClear }: Props) {
           src="/zoo-bg.png"
           alt="动物园背景"
           fill
+          sizes="100vw"
           className="object-cover"
           priority
         />
         <div className="absolute inset-0 bg-white/55" />
       </div>
 
-      <header className="relative z-10 flex items-center gap-3 px-4 py-3 bg-white/70 backdrop-blur border-b border-niuniu-pinkSoft">
+      <header className="relative z-30 flex items-center gap-3 px-4 py-3 bg-white/70 backdrop-blur border-b border-niuniu-pinkSoft">
         <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-niuniu-pink bg-white">
           <Image
             src="/niuniu-avatar.png"
-            alt="妞妞"
+            alt="妞妞导游"
             width={80}
             height={80}
             className="w-full h-full object-cover"
             priority
           />
         </div>
-        <div className="flex flex-col">
-          <span className="font-bold text-gray-800">妞妞老师</span>
-          <span className="text-xs text-gray-500">动物园游记 · 语言训练</span>
+        <div className="flex flex-col min-w-0">
+          <span className="font-bold text-gray-800">妞妞导游</span>
+          <span className="text-xs text-gray-500 truncate">
+            {subtitle ?? "动物园游记 · 语言训练"}
+          </span>
         </div>
         <div className="flex-1" />
+        {moduleSwitcher}
         {onClear ? (
           <button
             type="button"
