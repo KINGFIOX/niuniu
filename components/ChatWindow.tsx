@@ -10,6 +10,7 @@ type Props = {
   onClear?: () => void;
   subtitle?: string;
   moduleSwitcher?: ReactNode;
+  ttsToggle?: ReactNode;
 };
 
 export function ChatWindow({
@@ -18,6 +19,7 @@ export function ChatWindow({
   onClear,
   subtitle,
   moduleSwitcher,
+  ttsToggle,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -59,6 +61,7 @@ export function ChatWindow({
           </span>
         </div>
         <div className="flex-1" />
+        {ttsToggle}
         {moduleSwitcher}
         {onClear ? (
           <button

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatInput } from "@/components/ChatInput";
 import { ChatWindow } from "@/components/ChatWindow";
 import { ModuleSwitcher } from "@/components/ModuleSwitcher";
+import { TtsToggle } from "@/components/TtsToggle";
 import type { ChatMessage } from "@/components/MessageBubble";
 import {
   DEFAULT_MODULE_ID,
@@ -12,16 +13,41 @@ import {
   WELCOME_MESSAGE,
   type ModuleId,
 } from "@/lib/systemPrompt";
+import { ttsQueue } from "@/lib/ttsQueue";
 
 const HISTORY_KEY = "niuniu-zoo-chat-history-v1";
 const MODULE_KEY = "niuniu-zoo-chat-current-module-v1";
+const TTS_KEY = "niuniu-zoo-chat-auto-tts-v1";
 
 const initialMessages: ChatMessage[] = [
   { role: "assistant", content: WELCOME_MESSAGE },
 ];
 
+const SENTENCE_END_RE = /[。！？!?\n.]/g;
+
 function isModuleId(v: unknown): v is ModuleId {
   return typeof v === "string" && v in MODULE_INDEX;
+}
+
+// Scan `full` from `fromIdx` for sentence-ending punctuation; enqueue each
+// completed sentence into the TTS queue. Returns the new "spoken-to" cursor.
+function flushSentencesForTts(
+  full: string,
+  fromIdx: number,
+  minLen = 4,
+): number {
+  let lastIdx = fromIdx;
+  SENTENCE_END_RE.lastIndex = fromIdx;
+  let match: RegExpExecArray | null;
+  while ((match = SENTENCE_END_RE.exec(full))) {
+    const end = match.index + 1;
+    const sentence = full.slice(lastIdx, end).trim();
+    if (sentence.length >= minLen) {
+      ttsQueue.enqueue(sentence);
+    }
+    lastIdx = end;
+  }
+  return lastIdx;
 }
 
 export default function Page() {
@@ -29,7 +55,18 @@ export default function Page() {
   const [streaming, setStreaming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [moduleId, setModuleId] = useState<ModuleId>(DEFAULT_MODULE_ID);
+  const [autoTts, setAutoTts] = useState<boolean>(true);
   const abortRef = useRef<AbortController | null>(null);
+  const autoTtsRef = useRef(autoTts);
+
+  useEffect(() => {
+    autoTtsRef.current = autoTts;
+  }, [autoTts]);
+
+  useEffect(() => {
+    ttsQueue.setErrorHandler((msg) => setError(msg));
+    return () => ttsQueue.setErrorHandler(null);
+  }, []);
 
   useEffect(() => {
     try {
@@ -49,13 +86,19 @@ export default function Page() {
     } catch {
       // ignore
     }
+    try {
+      const rawTts = localStorage.getItem(TTS_KEY);
+      if (rawTts === "0" || rawTts === "false") setAutoTts(false);
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(messages));
     } catch {
-      // quota or private mode; ignore
+      // ignore
     }
   }, [messages]);
 
@@ -67,12 +110,23 @@ export default function Page() {
     }
   }, [moduleId]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(TTS_KEY, autoTts ? "1" : "0");
+    } catch {
+      // ignore
+    }
+    if (!autoTts) ttsQueue.clear();
+  }, [autoTts]);
+
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
+    ttsQueue.clear();
   }, []);
 
   const handleClear = useCallback(() => {
     abortRef.current?.abort();
+    ttsQueue.clear();
     setMessages(initialMessages);
     setStreaming(null);
     setError(null);
@@ -83,9 +137,19 @@ export default function Page() {
     }
   }, []);
 
+  const handleUserGesture = useCallback(() => {
+    ttsQueue.unlockAutoplay();
+  }, []);
+
+  const handleModuleChange = useCallback((id: ModuleId) => {
+    setModuleId(id);
+    ttsQueue.clear();
+  }, []);
+
   const handleSend = useCallback(
     async (text: string) => {
       setError(null);
+      ttsQueue.clear();
       const userMsg: ChatMessage = { role: "user", content: text };
       const nextHistory = [...messages, userMsg];
       setMessages(nextHistory);
@@ -93,6 +157,8 @@ export default function Page() {
 
       const controller = new AbortController();
       abortRef.current = controller;
+
+      let spokenUpto = 0;
 
       try {
         const resp = await fetch("/api/chat", {
@@ -134,6 +200,9 @@ export default function Page() {
               if (typeof delta === "string" && delta.length > 0) {
                 assistantText += delta;
                 setStreaming(assistantText);
+                if (autoTtsRef.current) {
+                  spokenUpto = flushSentencesForTts(assistantText, spokenUpto);
+                }
               }
             } catch {
               // ignore non-JSON keepalive lines
@@ -142,6 +211,15 @@ export default function Page() {
         }
 
         if (assistantText.length > 0) {
+          // Flush any trailing partial sentence the stream ended without
+          // punctuation.
+          if (
+            autoTtsRef.current &&
+            assistantText.length > spokenUpto
+          ) {
+            const tail = assistantText.slice(spokenUpto).trim();
+            if (tail.length > 0) ttsQueue.enqueue(tail);
+          }
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: assistantText },
@@ -164,6 +242,33 @@ export default function Page() {
     [messages, moduleId],
   );
 
+  const handleVoice = useCallback(
+    async (wav: Blob) => {
+      setError(null);
+      const form = new FormData();
+      form.append("audio", wav, "voice.wav");
+      try {
+        const resp = await fetch("/api/stt", { method: "POST", body: form });
+        if (!resp.ok) {
+          const errBody = await resp.text().catch(() => "");
+          throw new Error(
+            `语音识别失败（${resp.status}）：${errBody.slice(0, 200)}`,
+          );
+        }
+        const { text } = (await resp.json()) as { text?: string };
+        if (!text || !text.trim()) {
+          setError("没听清楚呀，请再说一次试试");
+          return;
+        }
+        await handleSend(text.trim());
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "语音识别失败";
+        setError(msg);
+      }
+    },
+    [handleSend],
+  );
+
   const isStreaming = streaming !== null;
 
   const currentModule = useMemo(
@@ -179,10 +284,11 @@ export default function Page() {
         streamingAssistant={streaming}
         onClear={handleClear}
         subtitle={subtitle}
+        ttsToggle={<TtsToggle value={autoTts} onChange={setAutoTts} />}
         moduleSwitcher={
           <ModuleSwitcher
             value={moduleId}
-            onChange={setModuleId}
+            onChange={handleModuleChange}
             disabled={isStreaming}
           />
         }
@@ -196,10 +302,12 @@ export default function Page() {
         disabled={isStreaming}
         isStreaming={isStreaming}
         onSend={handleSend}
+        onVoice={handleVoice}
         onStop={handleStop}
+        onUserGesture={handleUserGesture}
       />
       <p className="text-center text-xs text-gray-400">
-        模型：DeepSeek · 由 DeepSeek-R1 驱动 · 本站对话仅用于教学演示
+        模型：DeepSeek-R1 · 语音：火山引擎 · 本站对话仅用于教学演示
       </p>
     </main>
   );
